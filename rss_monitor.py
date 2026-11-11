@@ -41,6 +41,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[log_handler]
 )
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # 默认配置
@@ -233,6 +234,34 @@ def save_config(config):
             except Exception:
                 pass
 
+def _split_message_chunks(message, max_length=3800):
+    text = str(message or '')
+    if len(text) <= max_length:
+        return [text]
+    chunks = []
+    current_lines = []
+    current_len = 0
+    for line in text.split('\n'):
+        # 处理单行本身超长的极端情况
+        while len(line) > max_length:
+            if current_lines:
+                chunks.append('\n'.join(current_lines))
+                current_lines = []
+                current_len = 0
+            chunks.append(line[:max_length])
+            line = line[max_length:]
+        add_len = len(line) + (1 if current_lines else 0)
+        if current_len + add_len > max_length and current_lines:
+            chunks.append('\n'.join(current_lines))
+            current_lines = [line]
+            current_len = len(line)
+        else:
+            current_lines.append(line)
+            current_len += add_len
+    if current_lines:
+        chunks.append('\n'.join(current_lines))
+    return chunks
+
 def send_telegram_message(message, config, reply_to_message_id=None, target_chat_id=None):
     bot_token = config['telegram']['bot_token']
     raw_targets = target_chat_id if target_chat_id else config['telegram']['chat_id']
@@ -243,25 +272,30 @@ def send_telegram_message(message, config, reply_to_message_id=None, target_chat
     if not target_ids:
         logger.error("Telegram目标chat_id为空")
         return False
+    chunks = _split_message_chunks(message, max_length=3800)
     any_success = False
     for cid in target_ids:
-        try:
-            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            data = {
-                "chat_id": cid,
-                "text": message,
-                "parse_mode": "HTML"
-            }
-            if reply_to_message_id:
-                data["reply_to_message_id"] = reply_to_message_id
-            response = requests.post(url, data=data, timeout=30)
-            if response.status_code == 200:
-                logger.info(f"Telegram消息发送成功 (目标: {cid})")
-                any_success = True
-            else:
-                logger.error(f"Telegram消息发送失败 (目标: {cid}): {response.text}")
-        except Exception as e:
-            logger.error(f"Telegram消息发送异常 (目标: {cid}): {e}")
+        cid_ok = True
+        for idx, chunk in enumerate(chunks):
+            try:
+                url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                data = {
+                    "chat_id": cid,
+                    "text": chunk
+                }
+                if reply_to_message_id and idx == 0:
+                    data["reply_to_message_id"] = reply_to_message_id
+                response = requests.post(url, data=data, timeout=30)
+                if response.status_code == 200:
+                    logger.info(f"Telegram消息发送成功 (目标: {cid}, 分段: {idx+1}/{len(chunks)})")
+                else:
+                    logger.error(f"Telegram消息发送失败 (目标: {cid}, 分段: {idx+1}/{len(chunks)}): {response.text}")
+                    cid_ok = False
+            except Exception as e:
+                logger.error(f"Telegram消息发送异常 (目标: {cid}, 分段: {idx+1}/{len(chunks)}): {e}")
+                cid_ok = False
+        if cid_ok:
+            any_success = True
     return any_success
 
 def check_rss_feed(config):
@@ -571,7 +605,7 @@ def telegram_command_listener():
                                 send_telegram_message("当前没有设置任何关键词", config, msg_id)
                             else:
                                 kw_list = '\n'.join([f"{i+1}. {k}" for i, k in enumerate(config['keywords'])])
-                                send_telegram_message(f"当前关键词列表：\n{kw_list}", config, msg_id)
+                                send_telegram_message(f"当前关键词列表（共 {len(config['keywords'])} 条）：\n{kw_list}", config, msg_id)
                         elif text.startswith("/test"):
                             notify_target = os.environ.get('TG_CHANNEL_ID', '').strip() or config['telegram'].get('channel_id', '').strip() or config['telegram']['chat_id']
                             if send_telegram_message("🔔 NodeSeek 监控推送通道测试成功！", config, target_chat_id=notify_target):
@@ -596,6 +630,9 @@ def telegram_command_listener():
                                 f"当前推送目标：{notify_target}"
                             )
                             send_telegram_message(help_msg, config, msg_id)
+            else:
+                logger.error(f"Telegram getUpdates请求失败 (HTTP {resp.status_code}): {resp.text}")
+                time.sleep(5)
             time.sleep(2)
         except Exception as e:
             logger.error(f"Telegram指令监听异常: {e}")
