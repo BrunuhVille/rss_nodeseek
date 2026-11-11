@@ -1,0 +1,20 @@
+services:
+  nseek-monitor:
+    # 填入公开镜像地址（任何服务器无需 docker login 即可直接拉取，自动识别 amd64 / arm64）
+    image: ghcr.io/你的github用户名(全小写)/rss_nodeseek:latest
+    container_name: rss_nodeseek
+    restart: always
+    environment:
+      - TG_BOT_TOKEN=你的TG机器人Token          # 填写Telegram机器人的Token(不需要引号)
+      - TG_CHAT_ID=你的个人Chat_ID              # 填写你的个人ID，用于私聊发命令实时修改关键词
+      - TG_CHANNEL_ID=-100xxxxxxxxxx            # 填写接收通知的TG私有频道ID（支持逗号分隔多个ID，不填则默认推给TG_CHAT_ID）
+      - CHECK_MIN_INTERVAL=15                   # 最小检查间隔（秒）
+      - CHECK_MAX_INTERVAL=30                   # 最大检查间隔（秒）
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data:/data                            # 持久化存储日志monitor.log与关键词config.json
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "1"
